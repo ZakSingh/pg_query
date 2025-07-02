@@ -27,6 +27,7 @@ typedef enum DeparseNodeContext {
 	DEPARSE_NODE_CONTEXT_ALTER_TYPE,
 	DEPARSE_NODE_CONTEXT_SET_STATEMENT,
 	DEPARSE_NODE_CONTEXT_FUNC_EXPR,
+	DEPARSE_NODE_CONTEXT_SELECT_SETOP,
 	// Identifier vs constant context
 	DEPARSE_NODE_CONTEXT_IDENTIFIER,
 	DEPARSE_NODE_CONTEXT_CONSTANT
@@ -121,7 +122,7 @@ typedef struct DeparseState
 	size_t next_comment_index;
 } DeparseState;
 
-static void deparseSelectStmt(DeparseState *state, SelectStmt *stmt);
+static void deparseSelectStmt(DeparseState *state, SelectStmt *stmt, DeparseNodeContext context);
 static void deparseIntoClause(DeparseState *state, IntoClause *into_clause);
 static void deparseRangeVar(DeparseState *state, RangeVar *range_var, DeparseNodeContext context);
 static void deparseResTarget(DeparseState *state, ResTarget *res_target, DeparseNodeContext context);
@@ -2576,12 +2577,22 @@ static void deparseUtilityOptionList(DeparseState *state, List *options)
 	}
 }
 
-static void deparseSelectStmt(DeparseState *state, SelectStmt *stmt)
+static void deparseSelectStmt(DeparseState *state, SelectStmt *stmt, DeparseNodeContext context)
 {
 	const ListCell *lc = NULL;
 	const ListCell *lc2 = NULL;
+	bool need_parens = context == DEPARSE_NODE_CONTEXT_SELECT_SETOP && (
+		list_length(stmt->sortClause) > 0 ||
+		stmt->limitOffset != NULL ||
+		stmt->limitCount != NULL ||
+		list_length(stmt->lockingClause) > 0 ||
+		stmt->withClause != NULL ||
+		stmt->op != SETOP_NONE);
 
-	deparseStatePushStatement(state);
+	if (need_parens)
+		deparseAppendStringInfoChar(state, '(');
+	if (need_parens || context != DEPARSE_NODE_CONTEXT_SELECT_SETOP)
+		deparseStatePushStatement(state);
 
 	if (stmt->withClause)
 	{
@@ -2676,46 +2687,35 @@ static void deparseSelectStmt(DeparseState *state, SelectStmt *stmt)
 		case SETOP_INTERSECT:
 		case SETOP_EXCEPT:
 			{
-				bool need_larg_parens =
-					list_length(stmt->larg->sortClause) > 0 ||
-					stmt->larg->limitOffset != NULL ||
-					stmt->larg->limitCount != NULL ||
-					list_length(stmt->larg->lockingClause) > 0 ||
-					stmt->larg->withClause != NULL ||
-					stmt->larg->op != SETOP_NONE;
-				bool need_rarg_parens =
-					list_length(stmt->rarg->sortClause) > 0 ||
-					stmt->rarg->limitOffset != NULL ||
-					stmt->rarg->limitCount != NULL ||
-					list_length(stmt->rarg->lockingClause) > 0 ||
-					stmt->rarg->withClause != NULL ||
-					stmt->rarg->op != SETOP_NONE;
-				if (need_larg_parens)
-					deparseAppendStringInfoChar(state, '(');
-				deparseSelectStmt(state, stmt->larg);
-				if (need_larg_parens)
-					deparseAppendStringInfoChar(state, ')');
+				// If WITH clause preceded, make sure to not place any opening parens on the same line
+				if (stmt->withClause)
+					deparseAppendBreakpoint(state);
+
+				deparseSelectStmt(state, stmt->larg, DEPARSE_NODE_CONTEXT_SELECT_SETOP);
 				switch (stmt->op)
 				{
 					case SETOP_UNION:
-						deparseAppendStringInfoString(state, " UNION ");
+						if (stmt->all)
+							deparseAppendMajorKeyword(state, "UNION ALL", true);
+						else
+							deparseAppendMajorKeyword(state, "UNION", true);
 						break;
 					case SETOP_INTERSECT:
-						deparseAppendStringInfoString(state, " INTERSECT ");
+						if (stmt->all)
+							deparseAppendMajorKeyword(state, "INTERSECT ALL", true);
+						else
+							deparseAppendMajorKeyword(state, "INTERSECT", true);
 						break;
 					case SETOP_EXCEPT:
-						deparseAppendStringInfoString(state, " EXCEPT ");
+						if (stmt->all)
+							deparseAppendMajorKeyword(state, "EXCEPT ALL", true);
+						else
+							deparseAppendMajorKeyword(state, "EXCEPT", true);
 						break;
 					default:
 						Assert(false);
 				}
-				if (stmt->all)
-					deparseAppendStringInfoString(state, "ALL ");
-				if (need_rarg_parens)
-					deparseAppendStringInfoChar(state, '(');
-				deparseSelectStmt(state, stmt->rarg);
-				if (need_rarg_parens)
-					deparseAppendStringInfoChar(state, ')');
+				deparseSelectStmt(state, stmt->rarg, DEPARSE_NODE_CONTEXT_SELECT_SETOP);
 				deparseAppendStringInfoChar(state, ' ');
 			}
 			break;
@@ -2763,7 +2763,10 @@ static void deparseSelectStmt(DeparseState *state, SelectStmt *stmt)
 
 	removeTrailingSpace(state);
 
-	deparseStatePopStatement(state);
+	if (need_parens || context != DEPARSE_NODE_CONTEXT_SELECT_SETOP)
+		deparseStatePopStatement(state);
+	if (need_parens)
+		deparseAppendStringInfoChar(state, ')');
 }
 
 static void deparseIntoClause(DeparseState *state, IntoClause *into_clause)
@@ -3355,7 +3358,7 @@ static void deparseSubLink(DeparseState *state, SubLink* sub_link)
 	switch (sub_link->subLinkType) {
 		case EXISTS_SUBLINK:
 			deparseAppendStringInfoString(state, "EXISTS (");
-			deparseSelectStmt(state, castNode(SelectStmt, sub_link->subselect));
+			deparseSelectStmt(state, castNode(SelectStmt, sub_link->subselect), DEPARSE_NODE_CONTEXT_NONE);
 			deparseAppendStringInfoChar(state, ')');
 			return;
 		case ALL_SUBLINK:
@@ -3363,7 +3366,7 @@ static void deparseSubLink(DeparseState *state, SubLink* sub_link)
 			deparseAppendStringInfoChar(state, ' ');
 			deparseSubqueryOp(state, sub_link->operName);
 			deparseAppendStringInfoString(state, " ALL (");
-			deparseSelectStmt(state, castNode(SelectStmt, sub_link->subselect));
+			deparseSelectStmt(state, castNode(SelectStmt, sub_link->subselect), DEPARSE_NODE_CONTEXT_NONE);
 			deparseAppendStringInfoChar(state, ')');
 			return;
 		case ANY_SUBLINK:
@@ -3379,7 +3382,7 @@ static void deparseSubLink(DeparseState *state, SubLink* sub_link)
 				deparseAppendStringInfoString(state, " IN ");
 			}
 			deparseAppendStringInfoChar(state, '(');
-			deparseSelectStmt(state, castNode(SelectStmt, sub_link->subselect));
+			deparseSelectStmt(state, castNode(SelectStmt, sub_link->subselect), DEPARSE_NODE_CONTEXT_NONE);
 			deparseAppendStringInfoChar(state, ')');
 			return;
 		case ROWCOMPARE_SUBLINK:
@@ -3388,7 +3391,7 @@ static void deparseSubLink(DeparseState *state, SubLink* sub_link)
 			return;
 		case EXPR_SUBLINK:
 			deparseAppendStringInfoString(state, "(");
-			deparseSelectStmt(state, castNode(SelectStmt, sub_link->subselect));
+			deparseSelectStmt(state, castNode(SelectStmt, sub_link->subselect), DEPARSE_NODE_CONTEXT_NONE);
 			deparseAppendStringInfoChar(state, ')');
 			return;
 		case MULTIEXPR_SUBLINK:
@@ -3397,7 +3400,7 @@ static void deparseSubLink(DeparseState *state, SubLink* sub_link)
 			return;
 		case ARRAY_SUBLINK:
 			deparseAppendStringInfoString(state, "ARRAY(");
-			deparseSelectStmt(state, castNode(SelectStmt, sub_link->subselect));
+			deparseSelectStmt(state, castNode(SelectStmt, sub_link->subselect), DEPARSE_NODE_CONTEXT_NONE);
 			deparseAppendStringInfoChar(state, ')');
 			return;
 		case CTE_SUBLINK: /* for SubPlans only */
@@ -3972,7 +3975,7 @@ static void deparseRangeSubselect(DeparseState *state, RangeSubselect *range_sub
 		deparseAppendStringInfoString(state, "LATERAL ");
 
 	deparseAppendStringInfoChar(state, '(');
-	deparseSelectStmt(state, castNode(SelectStmt, range_subselect->subquery));
+	deparseSelectStmt(state, castNode(SelectStmt, range_subselect->subquery), DEPARSE_NODE_CONTEXT_NONE);
 	deparseAppendStringInfoChar(state, ')');
 
 	if (range_subselect->alias != NULL)
@@ -4638,7 +4641,7 @@ static void deparseInsertStmt(DeparseState *state, InsertStmt *insert_stmt)
 
 	if (insert_stmt->selectStmt != NULL)
 	{
-		deparseSelectStmt(state, castNode(SelectStmt, insert_stmt->selectStmt));
+		deparseSelectStmt(state, castNode(SelectStmt, insert_stmt->selectStmt), DEPARSE_NODE_CONTEXT_NONE);
 		deparseAppendStringInfoChar(state, ' ');
 	}
 	else
@@ -4747,7 +4750,7 @@ static void deparseUpdateStmt(DeparseState *state, UpdateStmt *update_stmt)
 
 	if (list_length(update_stmt->targetList) > 0)
 	{
-		deparseAppendStringInfoString(state, "SET ");
+		deparseAppendMajorKeyword(state, "SET", true);
 		deparseSetClauseList(state, update_stmt->targetList);
 		deparseAppendStringInfoChar(state, ' ');
 	}
@@ -4757,7 +4760,7 @@ static void deparseUpdateStmt(DeparseState *state, UpdateStmt *update_stmt)
 
 	if (list_length(update_stmt->returningList) > 0)
 	{
-		deparseAppendStringInfoString(state, "RETURNING ");
+		deparseAppendMajorKeyword(state, "RETURNING", true);
 		deparseTargetList(state, update_stmt->returningList);
 	}
 
@@ -6269,7 +6272,7 @@ static void deparseCreateTableAsStmt(DeparseState *state, CreateTableAsStmt *cre
 	if (IsA(create_table_as_stmt->query, ExecuteStmt))
 		deparseExecuteStmt(state, castNode(ExecuteStmt, create_table_as_stmt->query));
 	else
-		deparseSelectStmt(state, castNode(SelectStmt, create_table_as_stmt->query));
+		deparseSelectStmt(state, castNode(SelectStmt, create_table_as_stmt->query), DEPARSE_NODE_CONTEXT_NONE);
 	deparseAppendStringInfoChar(state, ' ');
 
 	if (create_table_as_stmt->into->skipData)
@@ -6303,7 +6306,7 @@ static void deparseViewStmt(DeparseState *state, ViewStmt *view_stmt)
 	deparseOptWith(state, view_stmt->options);
 
 	deparseAppendStringInfoString(state, "AS ");
-	deparseSelectStmt(state, castNode(SelectStmt, view_stmt->query));
+	deparseSelectStmt(state, castNode(SelectStmt, view_stmt->query), DEPARSE_NODE_CONTEXT_NONE);
 	deparseAppendStringInfoChar(state, ' ');
 
 	switch (view_stmt->withCheckOption)
@@ -9073,7 +9076,7 @@ static void deparseDeclareCursorStmt(DeparseState *state, DeclareCursorStmt *dec
 
 	deparseAppendStringInfoString(state, "FOR ");
 
-	deparseSelectStmt(state, castNode(SelectStmt, declare_cursor_stmt->query));
+	deparseSelectStmt(state, castNode(SelectStmt, declare_cursor_stmt->query), DEPARSE_NODE_CONTEXT_NONE);
 }
 
 static void deparseFetchStmt(DeparseState *state, FetchStmt *fetch_stmt)
@@ -11025,7 +11028,7 @@ static void deparseJsonArrayQueryConstructor(DeparseState *state, JsonArrayQuery
 {
 	deparseAppendStringInfoString(state, "JSON_ARRAY(");
 
-	deparseSelectStmt(state, castNode(SelectStmt, json_array_query_constructor->query));
+	deparseSelectStmt(state, castNode(SelectStmt, json_array_query_constructor->query), DEPARSE_NODE_CONTEXT_NONE);
 	deparseJsonFormat(state, json_array_query_constructor->format);
 	deparseJsonOutput(state, json_array_query_constructor->output);
 
@@ -11412,7 +11415,7 @@ static void deparsePreparableStmt(DeparseState *state, Node *node)
 	switch (nodeTag(node))
 	{
 		case T_SelectStmt:
-			deparseSelectStmt(state, castNode(SelectStmt, node));
+			deparseSelectStmt(state, castNode(SelectStmt, node), DEPARSE_NODE_CONTEXT_NONE);
 			break;
 		case T_InsertStmt:
 			deparseInsertStmt(state, castNode(InsertStmt, node));
@@ -11437,7 +11440,7 @@ static void deparseRuleActionStmt(DeparseState *state, Node *node)
 	switch (nodeTag(node))
 	{
 		case T_SelectStmt:
-			deparseSelectStmt(state, castNode(SelectStmt, node));
+			deparseSelectStmt(state, castNode(SelectStmt, node), DEPARSE_NODE_CONTEXT_NONE);
 			break;
 		case T_InsertStmt:
 			deparseInsertStmt(state, castNode(InsertStmt, node));
@@ -11462,7 +11465,7 @@ static void deparseExplainableStmt(DeparseState *state, Node *node)
 	switch (nodeTag(node))
 	{
 		case T_SelectStmt:
-			deparseSelectStmt(state, castNode(SelectStmt, node));
+			deparseSelectStmt(state, castNode(SelectStmt, node), DEPARSE_NODE_CONTEXT_NONE);
 			break;
 		case T_InsertStmt:
 			deparseInsertStmt(state, castNode(InsertStmt, node));
@@ -11859,7 +11862,7 @@ static void deparseStmt(DeparseState *state, Node *node)
 			deparseSecLabelStmt(state, castNode(SecLabelStmt, node));
 			break;
 		case T_SelectStmt:
-			deparseSelectStmt(state, castNode(SelectStmt, node));
+			deparseSelectStmt(state, castNode(SelectStmt, node), DEPARSE_NODE_CONTEXT_NONE);
 			break;
 		case T_TransactionStmt:
 			deparseTransactionStmt(state, castNode(TransactionStmt, node));
