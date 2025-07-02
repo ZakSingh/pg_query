@@ -117,7 +117,12 @@ PgQueryFingerprintResult pg_query_fingerprint_opts(const char* input, int parser
 PgQuerySplitResult pg_query_split_with_scanner(const char *input);
 PgQuerySplitResult pg_query_split_with_parser(const char *input);
 
+// To avoid including postgres_deparse.h here, reference PostgresDeparseOpts as a stub.
+// (when using PostgresDeparseOpts, make sure to also include postgres_deparse.h)
+struct PostgresDeparseOpts;
+
 PgQueryDeparseResult pg_query_deparse_protobuf(PgQueryProtobuf parse_tree);
+PgQueryDeparseResult pg_query_deparse_protobuf_opts(PgQueryProtobuf parse_tree, struct PostgresDeparseOpts opts);
 
 void pg_query_free_normalize_result(PgQueryNormalizeResult result);
 void pg_query_free_scan_result(PgQueryScanResult result);

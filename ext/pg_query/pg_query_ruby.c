@@ -1,4 +1,5 @@
 #include "pg_query.h"
+#include "postgres_deparse.h"
 #include "xxhash/xxhash.h"
 #include <ruby.h>
 
@@ -9,6 +10,7 @@ void raise_ruby_scan_error(PgQueryScanResult result);
 
 VALUE pg_query_ruby_parse_protobuf(VALUE self, VALUE input);
 VALUE pg_query_ruby_deparse_protobuf(VALUE self, VALUE input);
+VALUE pg_query_ruby_deparse_protobuf_pretty_print(VALUE self, VALUE input);
 VALUE pg_query_ruby_normalize(VALUE self, VALUE input);
 VALUE pg_query_ruby_fingerprint(VALUE self, VALUE input);
 VALUE pg_query_ruby_scan(VALUE self, VALUE input);
@@ -22,6 +24,7 @@ __attribute__((visibility ("default"))) void Init_pg_query(void)
 
 	rb_define_singleton_method(cPgQuery, "parse_protobuf", pg_query_ruby_parse_protobuf, 1);
 	rb_define_singleton_method(cPgQuery, "deparse_protobuf", pg_query_ruby_deparse_protobuf, 1);
+	rb_define_singleton_method(cPgQuery, "deparse_protobuf_pretty_print", pg_query_ruby_deparse_protobuf_pretty_print, 1);
 	rb_define_singleton_method(cPgQuery, "normalize", pg_query_ruby_normalize, 1);
 	rb_define_singleton_method(cPgQuery, "fingerprint", pg_query_ruby_fingerprint, 1);
 	rb_define_singleton_method(cPgQuery, "_raw_scan", pg_query_ruby_scan, 1);
@@ -151,6 +154,32 @@ VALUE pg_query_ruby_deparse_protobuf(VALUE self, VALUE input)
 	pbuf.data = StringValuePtr(input);
 	pbuf.len = RSTRING_LEN(input);
 	result = pg_query_deparse_protobuf(pbuf);
+
+	if (result.error) raise_ruby_deparse_error(result);
+
+	output = rb_str_new2(result.query);
+
+	pg_query_free_deparse_result(result);
+
+	return output;
+}
+
+VALUE pg_query_ruby_deparse_protobuf_pretty_print(VALUE self, VALUE input)
+{
+	Check_Type(input, T_STRING);
+
+	VALUE output;
+	PgQueryProtobuf pbuf = {0};
+	PgQueryDeparseResult result = {0};
+	PostgresDeparseOpts deparse_opts;
+	deparse_opts.comments = NULL;
+	deparse_opts.comment_count = 0;
+	deparse_opts.pretty_print = true;
+	deparse_opts.indent_size = 0;
+
+	pbuf.data = StringValuePtr(input);
+	pbuf.len = RSTRING_LEN(input);
+	result = pg_query_deparse_protobuf_opts(pbuf, deparse_opts);
 
 	if (result.error) raise_ruby_deparse_error(result);
 

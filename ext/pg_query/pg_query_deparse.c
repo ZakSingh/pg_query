@@ -4,7 +4,18 @@
 
 #include "postgres_deparse.h"
 
+#include "postgres.h"
+#include "lib/stringinfo.h"
+#include "nodes/parsenodes.h"
+
 PgQueryDeparseResult pg_query_deparse_protobuf(PgQueryProtobuf parse_tree)
+{
+	PostgresDeparseOpts opts;
+	MemSet(&opts, 0, sizeof(PostgresDeparseOpts));
+	return pg_query_deparse_protobuf_opts(parse_tree, opts);
+}
+
+PgQueryDeparseResult pg_query_deparse_protobuf_opts(PgQueryProtobuf parse_tree, PostgresDeparseOpts opts)
 {
 	PgQueryDeparseResult result = {0};
 	StringInfoData str;
@@ -21,7 +32,7 @@ PgQueryDeparseResult pg_query_deparse_protobuf(PgQueryProtobuf parse_tree)
 		initStringInfo(&str);
 
 		foreach(lc, stmts) {
-			deparseRawStmt(&str, castNode(RawStmt, lfirst(lc)));
+			deparseRawStmtOpts(&str, castNode(RawStmt, lfirst(lc)), opts);
 			if (lnext(stmts, lc))
 				appendStringInfoString(&str, "; ");
 		}

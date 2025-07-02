@@ -47,10 +47,51 @@
 
 
 /*
+ * initStringInfoInternal
+ *
+ * Initialize a StringInfoData struct (with previously undefined contents)
+ * to describe an empty string.
+ * The initial memory allocation size is specified by 'initsize'.
+ * The valid range for 'initsize' is 1 to MaxAllocSize.
+ */
+static inline void
+initStringInfoInternal(StringInfo str, int initsize)
+{
+	Assert(initsize >= 1 && initsize <= MaxAllocSize);
+
+	str->data = (char *) palloc(initsize);
+	str->maxlen = initsize;
+	resetStringInfo(str);
+}
+
+/*
+ * makeStringInfoInternal(int initsize)
+ *
+ * Create an empty 'StringInfoData' & return a pointer to it.
+ * The initial memory allocation size is specified by 'initsize'.
+ * The valid range for 'initsize' is 1 to MaxAllocSize.
+ */
+static inline StringInfo
+makeStringInfoInternal(int initsize)
+{
+	StringInfo	res = (StringInfo) palloc(sizeof(StringInfoData));
+
+	initStringInfoInternal(res, initsize);
+	return res;
+}
+
+/*
  * makeStringInfo
  *
  * Create an empty 'StringInfoData' & return a pointer to it.
  */
+StringInfo
+makeStringInfo(void)
+{
+#define STRINGINFO_DEFAULT_SIZE 1024	/* default initial allocation size */
+
+	return makeStringInfoInternal(STRINGINFO_DEFAULT_SIZE);
+}
 
 
 /*

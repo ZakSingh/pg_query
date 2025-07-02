@@ -66,6 +66,7 @@ task :update_source do
   system("mv #{extdir}/postgres/* #{extdir}/")
   system("rmdir #{extdir}/postgres")
   system("cp -a #{libdir}/pg_query.h #{extdir}/include")
+  system("cp -a #{libdir}/postgres_deparse.h #{extdir}/include")
   # Protobuf definitions
   system("protoc --proto_path=#{libdir}/protobuf --ruby_out=#{File.join(__dir__, 'lib/pg_query')} #{libdir}/protobuf/pg_query.proto")
   system("mkdir -p #{extdir}/include/protobuf")
