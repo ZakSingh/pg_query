@@ -1865,3 +1865,55 @@ fn it_parses_DROP_TYPE() {
 )"#
     );
 }
+
+#[test]
+fn it_traverses_typecast_nodes_in_values() {
+    let sql = "INSERT INTO users VALUES (1::integer, 'John'::text)";
+    let result = parse(sql).unwrap();
+    assert_eq!(result.warnings.len(), 0);
+    assert_eq!(result.tables(), ["users"]);
+    assert_eq!(result.statement_types(), ["InsertStmt"]);
+    
+    let nodes = result.protobuf.nodes();
+    
+    let typecast_nodes: Vec<_> = nodes.iter().filter(|(node, _, _, _)| {
+        matches!(node, pg_query::NodeRef::TypeCast(_))
+    }).collect();
+    
+    // Now that values_lists is being traversed, we should find the TypeCast nodes
+    assert!(typecast_nodes.len() >= 2, "Expected at least 2 TypeCast nodes, found {}", typecast_nodes.len());
+}
+
+#[test]
+fn it_traverses_typecast_nodes_in_select_values() {
+    let sql = "SELECT * FROM (VALUES (1::integer, 'John'::text), (2::integer, 'Jane'::text)) AS t(id, name)";
+    let result = parse(sql).unwrap();
+    assert_eq!(result.warnings.len(), 0);
+    assert_eq!(result.statement_types(), ["SelectStmt"]);
+    
+    let nodes = result.protobuf.nodes();
+    
+    let typecast_nodes: Vec<_> = nodes.iter().filter(|(node, _, _, _)| {
+        matches!(node, pg_query::NodeRef::TypeCast(_))
+    }).collect();
+    
+    // Should find 4 TypeCast nodes: 2 integer casts and 2 text casts
+    assert!(typecast_nodes.len() >= 4, "Expected at least 4 TypeCast nodes, found {}", typecast_nodes.len());
+}
+
+#[test]
+fn it_traverses_typecast_nodes_in_direct_values() {
+    let sql = "VALUES (1::integer, 'John'::text), (2::integer, 'Jane'::text)";
+    let result = parse(sql).unwrap();
+    assert_eq!(result.warnings.len(), 0);
+    assert_eq!(result.statement_types(), ["SelectStmt"]);
+    
+    let nodes = result.protobuf.nodes();
+    
+    let typecast_nodes: Vec<_> = nodes.iter().filter(|(node, _, _, _)| {
+        matches!(node, pg_query::NodeRef::TypeCast(_))
+    }).collect();
+    
+    // Should find 4 TypeCast nodes: 2 integer casts and 2 text casts
+    assert!(typecast_nodes.len() >= 4, "Expected at least 4 TypeCast nodes, found {}", typecast_nodes.len());
+}

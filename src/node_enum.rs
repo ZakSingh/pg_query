@@ -62,6 +62,11 @@ impl NodeEnum {
                             }
                         });
                     }
+                    s.values_lists.iter().for_each(|n| {
+                        if let Some(n) = n.node.as_ref() {
+                            iter.push((n.to_ref(), depth, Context::Select, false));
+                        }
+                    });
                     match protobuf::SetOperation::try_from(s.op) {
                         Ok(protobuf::SetOperation::SetopNone) => {
                             s.from_clause.iter().for_each(|n| {
@@ -433,6 +438,23 @@ impl NodeEnum {
                             iter.push((n.to_ref(), depth, context, has_filter_columns));
                         }
                     }
+                    if let Some(type_name) = &n.type_name {
+                        type_name.names.iter().for_each(|n| {
+                            if let Some(n) = n.node.as_ref() {
+                                iter.push((n.to_ref(), depth, context, has_filter_columns));
+                            }
+                        });
+                        type_name.typmods.iter().for_each(|n| {
+                            if let Some(n) = n.node.as_ref() {
+                                iter.push((n.to_ref(), depth, context, has_filter_columns));
+                            }
+                        });
+                        type_name.array_bounds.iter().for_each(|n| {
+                            if let Some(n) = n.node.as_ref() {
+                                iter.push((n.to_ref(), depth, context, has_filter_columns));
+                            }
+                        });
+                    }
                 }
                 //
                 // from-clause items
@@ -531,6 +553,11 @@ impl NodeEnum {
                             }
                         });
                     }
+                    s.values_lists.iter_mut().for_each(|n| {
+                        if let Some(n) = n.node.as_mut() {
+                            iter.push((n.to_mut(), depth, Context::Select));
+                        }
+                    });
                     match protobuf::SetOperation::try_from(s.op) {
                         Ok(protobuf::SetOperation::SetopNone) => {
                             s.from_clause.iter_mut().for_each(|n| {
