@@ -118,8 +118,9 @@ impl ParseResult {
                         Ok(protobuf::ObjectType::ObjectFunction) => {
                             // Only one function can be dropped in a statement
                             if let Some(NodeEnum::ObjectWithArgs(object)) = &s.objects[0].node {
-                                if let Some(NodeEnum::String(string)) = &object.objname[0].node {
-                                    functions.insert((string.sval.to_string(), Context::DDL));
+                                let funcname = join(object.objname.iter().filter_map(|n| n.node.as_ref().map(|n| &cast!(n, NodeEnum::String).sval)), ".");
+                                if !funcname.is_empty() {
+                                    functions.insert((funcname, Context::DDL));
                                 }
                             }
                         }
@@ -127,16 +128,18 @@ impl ParseResult {
                     }
                 }
                 NodeRef::CreateFunctionStmt(s) => {
-                    if let Some(NodeEnum::String(string)) = &s.funcname[0].node {
-                        functions.insert((string.sval.to_string(), Context::DDL));
+                    let funcname = join(s.funcname.iter().filter_map(|n| n.node.as_ref().map(|n| &cast!(n, NodeEnum::String).sval)), ".");
+                    if !funcname.is_empty() {
+                        functions.insert((funcname, Context::DDL));
                     }
                 }
                 NodeRef::RenameStmt(s) => {
                     if let Ok(protobuf::ObjectType::ObjectFunction) = protobuf::ObjectType::try_from(s.rename_type) {
                         if let Some(object) = &s.object {
                             if let Some(NodeEnum::ObjectWithArgs(object)) = &object.node {
-                                if let Some(NodeEnum::String(string)) = &object.objname[0].node {
-                                    functions.insert((string.sval.to_string(), Context::DDL));
+                                let funcname = join(object.objname.iter().filter_map(|n| n.node.as_ref().map(|n| &cast!(n, NodeEnum::String).sval)), ".");
+                                if !funcname.is_empty() {
+                                    functions.insert((funcname, Context::DDL));
                                     functions.insert((s.newname.to_string(), Context::DDL));
                                 }
                             }
@@ -158,6 +161,66 @@ impl ParseResult {
                         .collect();
                     if f.len() > 0 {
                         filter_columns.insert((f.get(1).cloned(), f[0].to_string()));
+                    }
+                }
+                NodeRef::ColumnDef(col_def) => {
+                    // Extract functions from DEFAULT clauses
+                    if let Some(raw_default) = &col_def.raw_default {
+                        if let Some(node) = &raw_default.node {
+                            extract_functions_from_node(node, &mut functions);
+                        }
+                    }
+                    
+                    // Extract functions from GENERATED expressions (stored as constraints)
+                    for constraint in &col_def.constraints {
+                        if let Some(constraint_node) = &constraint.node {
+                            if let NodeEnum::Constraint(constraint_data) = constraint_node {
+                                if constraint_data.contype == protobuf::ConstrType::ConstrGenerated as i32 {
+                                    if let Some(raw_expr) = &constraint_data.raw_expr {
+                                        if let Some(node) = &raw_expr.node {
+                                            extract_functions_from_node(node, &mut functions);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                NodeRef::CreateStmt(create_stmt) => {
+                    // Manually traverse ColumnDef nodes since they're not in the main nodes() iteration
+                    for table_elt in &create_stmt.table_elts {
+                        if let Some(elt_node) = &table_elt.node {
+                            if let NodeEnum::ColumnDef(col_def) = elt_node {
+                                
+                                // Extract functions from DEFAULT clauses
+                                if let Some(raw_default) = &col_def.raw_default {
+                                    if let Some(node) = &raw_default.node {
+                                        extract_functions_from_node(node, &mut functions);
+                                    }
+                                }
+                                
+                                // Extract functions from GENERATED expressions (stored as constraints)
+                                for constraint in &col_def.constraints {
+                                    if let Some(constraint_node) = &constraint.node {
+                                        if let NodeEnum::Constraint(constraint_data) = constraint_node {
+                                            if constraint_data.contype == protobuf::ConstrType::ConstrGenerated as i32 {
+                                                if let Some(raw_expr) = &constraint_data.raw_expr {
+                                                    if let Some(node) = &raw_expr.node {
+                                                        extract_functions_from_node(node, &mut functions);
+                                                    }
+                                                }
+                                            } else if constraint_data.contype == protobuf::ConstrType::ConstrDefault as i32 {
+                                                if let Some(raw_expr) = &constraint_data.raw_expr {
+                                                    if let Some(node) = &raw_expr.node {
+                                                        extract_functions_from_node(node, &mut functions);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 _ => (),
@@ -391,3 +454,99 @@ impl ParseResult {
             .collect()
     }
 }
+
+/// Extract functions from a node recursively
+fn extract_functions_from_node(node: &NodeEnum, functions: &mut HashSet<(String, Context)>) {
+    match node {
+        NodeEnum::FuncCall(func_call) => {
+            let funcname = join(func_call.funcname.iter().filter_map(|n| n.node.as_ref().map(|n| &cast!(n, NodeEnum::String).sval)), ".");
+            functions.insert((funcname, Context::Call));
+            
+            // Also extract from function arguments
+            for arg in &func_call.args {
+                if let Some(arg_node) = &arg.node {
+                    extract_functions_from_node(arg_node, functions);
+                }
+            }
+        }
+        NodeEnum::AExpr(a_expr) => {
+            if let Some(lexpr) = &a_expr.lexpr {
+                if let Some(node) = &lexpr.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+            if let Some(rexpr) = &a_expr.rexpr {
+                if let Some(node) = &rexpr.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+        }
+        NodeEnum::TypeCast(type_cast) => {
+            if let Some(arg) = &type_cast.arg {
+                if let Some(node) = &arg.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+        }
+        NodeEnum::CaseExpr(case_expr) => {
+            if let Some(arg) = &case_expr.arg {
+                if let Some(node) = &arg.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+            if let Some(defresult) = &case_expr.defresult {
+                if let Some(node) = &defresult.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+            for when_clause in &case_expr.args {
+                if let Some(node) = &when_clause.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+        }
+        NodeEnum::CaseWhen(case_when) => {
+            if let Some(expr) = &case_when.expr {
+                if let Some(node) = &expr.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+            if let Some(result) = &case_when.result {
+                if let Some(node) = &result.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+        }
+        NodeEnum::CoalesceExpr(coalesce_expr) => {
+            for arg in &coalesce_expr.args {
+                if let Some(node) = &arg.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+        }
+        NodeEnum::ArrayExpr(array_expr) => {
+            for element in &array_expr.elements {
+                if let Some(node) = &element.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+        }
+        NodeEnum::SubLink(sublink) => {
+            if let Some(subselect) = &sublink.subselect {
+                if let Some(node) = &subselect.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+        }
+        NodeEnum::List(list) => {
+            for item in &list.items {
+                if let Some(node) = &item.node {
+                    extract_functions_from_node(node, functions);
+                }
+            }
+        }
+        // Add more node types as needed
+        _ => {}
+    }
+}
+
